@@ -1,7 +1,7 @@
 """The shader code must stay the same as the Material Maker port.
 
-The hashes below were taken from the version 0.5.0 code, where the GLSL lived
-in Python strings, before it was moved into shaders/*.glsl. They pin:
+The hashes below were taken from the original port, where the GLSL lived in
+Python strings, before it was moved into shaders/*.glsl. They pin:
 
   * each shader file,
   * the complete fragment source built for every stage,
@@ -69,14 +69,14 @@ addon, _ = load_addon(ROOT / "mm_kuwahara_texture" / "__init__.py")
 
 changed = [FILES[name] for name, expected in PART_HASHES.items() if sha(normalize(getattr(addon, name))) != expected]
 assert not changed, (
-    "shader code differs from the 0.5.0 text in: " + ", ".join(changed) +
+    "shader code differs from the original port in: " + ", ".join(changed) +
     ". This is a real change (layout is ignored). If it is intended, update the hashes in this test."
 )
-print("ok: the four shader files hold the 0.5.0 code")
+print("ok: the four shader files hold the original port code")
 
 for stage, expected in STAGE_HASHES.items():
     info = addon.make_shader(stage)
-    assert sha(normalize(info.fragment)) == expected, f"fragment source for '{stage}' differs from the 0.5.0 code"
+    assert sha(normalize(info.fragment)) == expected, f"fragment source for '{stage}' differs from the original port"
     assert sha(info.vertex) == VERTEX_HASH, "vertex source differs"
     print("ok: fragment source of", stage, "is unchanged")
 

@@ -3,9 +3,6 @@
 # Filter shader: Copyright (c) 2022 Garrett Gunnell.
 # Material Maker adaptations: Copyright (c) 2018-present Rodolphe Suescun and contributors.
 # See LICENSES.txt inside the delivered ZIP for full notices and sources.
-# Version 1.0.0: GLSL moved to shaders/*.glsl (byte-identical), crash fix when run without an area,
-# now a regular add-on (bl_info) instead of an extension.
-# Version 0.5.0: correct byte-image color handling; installable extension.
 # Standalone processing; this does not install a live material/shader node.
 
 bl_info = {
