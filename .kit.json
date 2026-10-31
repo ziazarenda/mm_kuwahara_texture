@@ -1,0 +1,8 @@
+{
+  "extras": [],
+  "files": {
+    "build.py": "52dad9b56f0837a693ac8655e696fac1ae58e71137cca1e6ce0d4342fc8f13a3",
+    "tests/blender/_run_in_blender.py": "b113ab737611b9ec986e274810d05a30466f7af078e89fbaa1c8eef08dfae7e2",
+    "tests/plain/_run_all.py": "096d1f5fcbcae151d7a6f54235346e69044404ebed27908c861b70c314f11b05"
+  }
+}

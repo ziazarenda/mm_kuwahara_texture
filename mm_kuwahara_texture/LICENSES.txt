@@ -1,0 +1,57 @@
+# MIT License
+
+Copyright (c) 2018-present Rodolphe Suescun and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Additional upstream attribution retained from anisotropic_kuwahara.mmg:
+Copyright (c) 2022 Garrett Gunnell
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Sources
+https://github.com/RodZill4/material-maker/blob/master/addons/material_maker/nodes/anisotropic_kuwahara.mmg
+https://github.com/RodZill4/material-maker/blob/master/addons/material_maker/nodes/gaussian_blur_x.mmg
+https://github.com/RodZill4/material-maker/blob/master/addons/material_maker/nodes/gaussian_blur_y.mmg
+https://github.com/GarrettGunnell/Post-Processing/blob/871a7ffcc44174f237b4c0127db51026c438d7a4/Assets/Kuwahara%20Filter/AnisotropicKuwahara.shader
+
+Port changes: Material Maker placeholders replaced with texture functions and uniforms;
+explicit repeated sampling; strict GLSL numeric typing; Blender GPU wrapper and UI.
+
+Diagnostic graph includes Material Maker Gaussian graph and shader definitions under the same MIT terms.
+
+PNG export wrapper: standard PNG filters and Python zlib; no upstream filter mathematics changed.
