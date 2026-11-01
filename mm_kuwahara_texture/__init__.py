@@ -7,7 +7,7 @@
 
 bl_info = {
     "name": "Material Maker Kuwahara Texture",
-    "author": "Texture port contributors",
+    "author": "ziazarenda",
     "version": (1, 0, 0),
     "blender": (5, 2, 0),
     "location": "Image Editor > Sidebar > MM Kuwahara",
@@ -22,6 +22,7 @@ import json
 import os
 import struct
 import tempfile
+import traceback
 import zlib
 from pathlib import Path
 from bpy_extras.io_utils import ExportHelper
@@ -181,14 +182,15 @@ class MMK_Settings(bpy.types.PropertyGroup):
     output_image: PointerProperty(name='Filtered image', type=bpy.types.Image)
     png_compression: IntProperty(name='PNG compression', default=80, min=0, max=100,
         description='Lossless compression: higher values usually save smaller files but take longer')
-    capture_buffers: BoolProperty(name='Capture diagnostic buffers', default=True,
-        description='Keep raw float arrays before PNG conversion; export them as one NPZ file')
+    capture_buffers: BoolProperty(name='Capture diagnostic buffers', default=False,
+        description='Keep the raw float results of every pass in memory so they can be saved as one NPZ file. '
+                    'Uses a lot of RAM at high resolutions')
     resolution: EnumProperty(name='Processing resolution', items=[
         (str(2**n), str(2**n)+' x '+str(2**n), '') for n in range(7,13)], default='512')
     export_resolution: EnumProperty(name='Output resolution', items=[
         ('SAME', 'Same as processing', 'No resampling pass'),
         *[(str(2**n), str(2**n)+' x '+str(2**n), '') for n in range(7,14)]], default='2048',
-        description='Resample the completed filter result; does not change brushstroke size')
+        description='Resample the finished result. Does not change the brushstroke size')
     size: IntProperty(name='Size', default=6, min=1, max=32)
     uniformity: FloatProperty(name='Uniformity', default=4.0, min=0.0, max=50.0)
     sharpness: FloatProperty(name='Sharpness', default=1.0, min=0.0, max=1.0)
@@ -196,37 +198,57 @@ class MMK_Settings(bpy.types.PropertyGroup):
 
 
 
+def source_problem(source):
+    """Say why the source image cannot be filtered, or return None when it can."""
+    if source is None or not source.has_data:
+        return 'Select a loaded source image first'
+    if source.source in {'TILED','MOVIE','SEQUENCE','VIEWER'}:
+        return 'First version supports single still images only'
+    width, height = source.size[:]
+    if width != height:
+        return 'Use a square image for matching Material Maker'
+    # rna_Image_pixels_get returns normalized bytes for byte images;
+    # it does NOT apply the sRGB-to-linear conversion. Float buffers follow
+    # different rules; reject them until explicitly supported and tested.
+    if source.is_float:
+        return 'Use an 8-bit JPEG or PNG source. Float images are not supported yet'
+    if source.channels != 4:
+        return 'This version requires a four-channel Blender image buffer'
+    if source.colorspace_settings.name not in {'sRGB','Non-Color','Raw'}:
+        return 'Use an sRGB color image or a Non-Color data image'
+    return None
+
+
+def image_rgba(image):
+    """Read an image's pixels as a height x width x 4 float32 array (bottom row first)."""
+    width, height = image.size[:]
+    values = np.empty(width*height*4, dtype=np.float32)
+    image.pixels.foreach_get(values)
+    return values.reshape(height,width,4)
+
+
+def set_uniform(shader, method, name, value):
+    """Set a shader uniform. Some drivers optimize unused uniforms out of each stage."""
+    try:
+        getattr(shader,method)(name,value)
+    except ValueError:
+        pass
+
+
 class MMK_OT_Filter(bpy.types.Operator):
     bl_idname = 'image.mm_kuwahara_filter'
     bl_label = 'Create filtered texture'
-    bl_description = 'GPU filter into a new image; source is preserved'
+    bl_description = 'Run the filter on the GPU and create a new image.'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = context.scene.mm_kuwahara
         source = settings.image or getattr(context.space_data, 'image', None)
-        if source is None or not source.has_data:
-            self.report({'ERROR'}, 'Select a loaded source image first')
-            return {'CANCELLED'}
-        if source.source in {'TILED','MOVIE','SEQUENCE','VIEWER'}:
-            self.report({'ERROR'}, 'First version supports single still images only')
+        problem = source_problem(source)
+        if problem:
+            self.report({'ERROR'}, problem)
             return {'CANCELLED'}
         width, height = source.size[:]
-        if width != height:
-            self.report({'ERROR'}, 'Use a square image for matching Material Maker')
-            return {'CANCELLED'}
-        # rna_Image_pixels_get returns normalized bytes for byte images;
-        # it does NOT apply the sRGB-to-linear conversion. Float buffers follow
-        # different rules; reject them until explicitly supported and tested.
-        if source.is_float:
-            self.report({'ERROR'}, 'Use an 8-bit JPEG/PNG source; float images are not supported yet')
-            return {'CANCELLED'}
-        if source.channels != 4:
-            self.report({'ERROR'}, 'This version requires a four-channel Blender image buffer')
-            return {'CANCELLED'}
-        if source.colorspace_settings.name not in {'sRGB','Non-Color','Raw'}:
-            self.report({'ERROR'}, 'Use an sRGB color image or a Non-Color data image')
-            return {'CANCELLED'}
         CAPTURED_BUFFERS.clear()
         targets = []
         output = None
@@ -238,10 +260,7 @@ class MMK_OT_Filter(bpy.types.Operator):
             res = int(settings.resolution)
             output_res = res if settings.export_resolution == 'SAME' else int(settings.export_resolution)
             wm.progress_begin(0, 4 + int(output_res != res))
-            pixels = np.empty(width*height*4, dtype=np.float32)
-            source.pixels.foreach_get(pixels)
-            pixels = pixels.reshape(height,width,4)
-            pixels = material_maker_byte_input(pixels)
+            pixels = material_maker_byte_input(image_rgba(source))
             # Run the original functions in Material Maker's logical top-first
             # coordinates. This aligns vertical sampling/accumulation order,
             # not just the final displayed orientation.
@@ -276,21 +295,15 @@ class MMK_OT_Filter(bpy.types.Operator):
                 with target.bind():
                     gpu.state.viewport_set(0,0,frame_res,frame_res)
                     shader.bind()
-                    # Some drivers optimize unused uniforms out of each stage.
-                    def uniform(method, name, value):
-                        try:
-                            getattr(shader,method)(name,value)
-                        except ValueError:
-                            pass
-                    uniform('uniform_sampler','color_tex',pass_color)
-                    uniform('uniform_sampler','tensor_tex',tensor)
-                    uniform('uniform_float','resolution',float(res))
-                    uniform('uniform_float','frame_resolution',float(frame_res))
-                    uniform('uniform_float','uniformity',settings.uniformity)
-                    uniform('uniform_float','blur_axis',axis)
-                    uniform('uniform_int','filter_size',settings.size)
-                    uniform('uniform_float','sharpness_value',settings.sharpness)
-                    uniform('uniform_float','eccentricity_value',settings.eccentricity)
+                    set_uniform(shader,'uniform_sampler','color_tex',pass_color)
+                    set_uniform(shader,'uniform_sampler','tensor_tex',tensor)
+                    set_uniform(shader,'uniform_float','resolution',float(res))
+                    set_uniform(shader,'uniform_float','frame_resolution',float(frame_res))
+                    set_uniform(shader,'uniform_float','uniformity',settings.uniformity)
+                    set_uniform(shader,'uniform_float','blur_axis',axis)
+                    set_uniform(shader,'uniform_int','filter_size',settings.size)
+                    set_uniform(shader,'uniform_float','sharpness_value',settings.sharpness)
+                    set_uniform(shader,'uniform_float','eccentricity_value',settings.eccentricity)
                     batch.draw(shader)
                 tensor = target.texture_color
                 if settings.capture_buffers and index < 4:
@@ -299,7 +312,7 @@ class MMK_OT_Filter(bpy.types.Operator):
                 wm.progress_update(index+1)
             values = np.array(tensor.read(), dtype=np.float32).reshape(output_res,output_res,4)
             if not np.isfinite(values).all():
-                raise ValueError('Non-finite shader output; no image was created')
+                raise ValueError('The shader produced invalid values, so no image was created')
             # GPU/capture buffers above are top-first; Blender image.pixels
             # expects bottom-first storage. Flip only the displayed output back.
             values = np.flipud(values).copy()
@@ -318,9 +331,10 @@ class MMK_OT_Filter(bpy.types.Operator):
             output.pixels.foreach_set(values.reshape(-1))
             output.update()
             output.use_fake_user = True
-            output['mm_kuwahara_settings'] = str({'resolution':res,'output_resolution':output_res,'size':settings.size,
-                'uniformity':settings.uniformity,'sharpness':settings.sharpness,
-                'eccentricity':settings.eccentricity,'version':ADDON_VERSION,'byte_values_preserved':True})
+            filter_settings = {'size':settings.size,'uniformity':settings.uniformity,
+                'sharpness':settings.sharpness,'eccentricity':settings.eccentricity}
+            output['mm_kuwahara_settings'] = str({'resolution':res,'output_resolution':output_res,
+                **filter_settings,'version':ADDON_VERSION,'byte_values_preserved':True})
             output.pack()
             settings.output_image = output
             if settings.capture_buffers:
@@ -329,8 +343,7 @@ class MMK_OT_Filter(bpy.types.Operator):
                     'source_name':source.name, 'source_size':[width,height],
                     'source_colorspace':source.colorspace_settings.name,
                     'processing_resolution':res, 'output_resolution':output_res,
-                    'size':settings.size, 'uniformity':settings.uniformity,
-                    'sharpness':settings.sharpness, 'eccentricity':settings.eccentricity,
+                    **filter_settings,
                     'source_gpu_format':'RGBA16F', 'source_conversion':'Godot byte-to-half truncation', 'sample_conversion':'measured half nearest ties upward', 'processing_coordinates':'Material Maker top-first', 'intermediate_gpu_format':'RGBA16F',
                     'orientation':'row 0 is TOP of image; matches Material Maker EXRs directly; no tensor sign correction',
                     'array_meaning':'raw shader values; no transfer function or PNG quantization',
@@ -342,10 +355,9 @@ class MMK_OT_Filter(bpy.types.Operator):
             if (context.area is not None and context.area.type == 'IMAGE_EDITOR'
                     and context.space_data is not None):
                 context.space_data.image = output
-            self.report({'INFO'}, 'Created '+output.name+'; use Export PNG to save')
+            self.report({'INFO'}, 'Created '+output.name+'. Use Export PNG to save it')
             return {'FINISHED'}
         except Exception as exc:
-            import traceback
             traceback.print_exc()
             if output is not None:
                 bpy.data.images.remove(output)
@@ -367,7 +379,7 @@ class MMK_OT_ExportPNG(bpy.types.Operator, ExportHelper):
     filename_ext = '.png'
     filter_glob: StringProperty(default='*.png', options={'HIDDEN'})
     compression: IntProperty(name='Compression', default=80, min=0, max=100,
-        description='Lossless compression; higher values generally make smaller files but save slower')
+        description='Lossless compression. Higher values usually make smaller files but take longer to save')
 
     @classmethod
     def poll(cls, context):
@@ -394,12 +406,9 @@ class MMK_OT_ExportPNG(bpy.types.Operator, ExportHelper):
             self.report({'ERROR'}, 'Choose a generated 8-bit RGBA filtered image')
             return {'CANCELLED'}
         try:
-            width, height = image.size[:]
-            values = np.empty(width*height*4, dtype=np.float32)
-            image.pixels.foreach_get(values)
             # Byte images return normalized encoded bytes, not scene-linear RGB.
             # Recover those bytes exactly and change only row storage convention.
-            rgba = np.rint(np.clip(values.reshape(height,width,4),0,1)*255).astype(np.uint8)
+            rgba = np.rint(np.clip(image_rgba(image),0,1)*255).astype(np.uint8)
             rgba = np.flipud(rgba)
             filepath = bpy.path.abspath(bpy.path.ensure_ext(self.filepath, '.png'))
             write_lossless_rgba_png(filepath, rgba, self.compression,
@@ -434,6 +443,10 @@ class MMK_OT_SaveDiagnostics(bpy.types.Operator, ExportHelper):
         return {'FINISHED'}
 
 
+BUTTON_SCALE_Y = 1.5
+INPUT_SCALE_Y = 1.3
+
+
 class MMK_PT_Panel(bpy.types.Panel):
     bl_label = 'Material Maker Kuwahara 1.0'
     bl_idname = 'IMAGE_PT_mm_kuwahara'
@@ -444,19 +457,42 @@ class MMK_PT_Panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         s = context.scene.mm_kuwahara
-        layout.prop(s,'image')
-        layout.prop(s,'resolution')
-        layout.prop(s,'export_resolution')
+
+        box = layout.box()
+        col = box.column()
+        col.scale_y = INPUT_SCALE_Y
+
+        col.prop(s, 'image', text='Source')
+        col.prop(s, 'resolution', text='Process')
+        col.prop(s, 'export_resolution', text='Output')
+
         for key in ('size','uniformity','sharpness','eccentricity'):
-            layout.prop(s,key)
-        layout.prop(s,'capture_buffers')
-        layout.operator('image.mm_kuwahara_filter')
-        layout.prop(s,'output_image')
-        layout.prop(s,'png_compression')
-        layout.operator('image.mm_kuwahara_export_png')
-        layout.operator('image.mm_kuwahara_save_diagnostics')
-        layout.label(text='Creates a new image; original stays intact.')
-        layout.label(text='Square 8-bit JPEG/PNG textures.')
+            col.prop(s,key)
+
+        col.prop(s, 'capture_buffers', text='Capture Buffers')
+
+        col = box.column()
+        col.scale_y = BUTTON_SCALE_Y
+        col.operator('image.mm_kuwahara_filter', text='Filter Texture')
+
+        box = layout.box()
+        col = box.column()
+        col.scale_y = INPUT_SCALE_Y
+        col.prop(s, 'output_image', text='Result')
+        col.prop(s, 'png_compression', text='Compression')
+
+        col = box.column()
+        col.scale_y = BUTTON_SCALE_Y
+        col.operator('image.mm_kuwahara_export_png', text='Export Lossless PNG')
+
+        if s.capture_buffers:
+            col.operator('image.mm_kuwahara_save_diagnostics')
+
+        note = layout.box()
+        col = note.column(align=True)
+        col.scale_y = 0.85
+        col.label(text='Square 8-bit PNG / JPG only', icon='INFO')
+        col.label(text='Non-destructive (creates new image)')
 
 
 CLASSES = (MMK_Settings,MMK_OT_Filter,MMK_OT_ExportPNG,MMK_OT_SaveDiagnostics,MMK_PT_Panel)
