@@ -14,6 +14,7 @@ The filter runs on the GPU and is a port of the Material Maker node. It aims to 
 
 - [Installation](#installation)
 - [Usage](#usage)
+- [Preview](#preview)
 - [Settings](#settings)
 - [Input requirements](#input-requirements)
 - [Exporting the result](#exporting-the-result)
@@ -39,7 +40,7 @@ The filter runs on the GPU and is a port of the Material Maker node. It aims to 
 1. Open the **Image Editor** and load a square JPEG or PNG texture.
 2. Open the sidebar (`N`) and go to the **MM Kuwahara** tab.
 3. Choose the image under **Source**, or leave it empty to use the image shown in the editor.
-4. Adjust the settings and click **Filter Texture**.
+4. Adjust the settings. Click **Preview** to check them quickly (see [Preview](#preview)), then click **Filter Texture** for the full result.
 5. A new image named `<source name>_MM_Kuwahara` is created and shown in the editor. Your original image is not changed.
 6. Click **Export Lossless PNG** to save it.
 
@@ -62,8 +63,23 @@ The new image is packed into the .blend file and has a fake user, so it is not l
 | **Sharpness** | 0 to 1 | 1 | How sharp the edges between regions are |
 | **Eccentricity** | 0 to 2 | 1 | How stretched the strokes are along their direction. Material Maker halves this value internally, and so does this add-on |
 | **Capture Buffers** | on or off | off | Keeps the intermediate results in memory for debugging. See [Diagnostic buffers](#diagnostic-buffers) |
+| **Preview** | 128, 256 or 512 | 256 | Size of the area that **Preview** filters. See [Preview](#preview) |
 
 The brushstroke size depends on **Process**. A 512 pixel pass looks coarser than a 2048 pixel pass of the same image, because the filter works in pixels. Use **Output** to scale the result up or down afterwards.
+
+---
+
+## Preview
+
+**Preview** filters only the middle of the image and shows the result in a temporary image named `<source name>_MM_Preview`. It is a quick way to try Size, Uniformity, Sharpness and Eccentricity on big images without waiting for the whole filter.
+
+- The preview is taken at the **Process** resolution, so the strokes look exactly like they will in the full result. It does not resample to **Output**.
+- It is a crop, not a smaller copy of the whole image. At 4096 it filters about 2% of the image, and the pixels are identical to the same pixels of the full result.
+- If the image is small (the Process resolution is not much larger than the preview), the whole image is filtered.
+- The preview image is not saved with the .blend file, and it cannot be used as a source. Your source stays selected in the panel.
+- It uses the same GPU memory as a full run at that resolution, so it is fast but not free at 4096.
+
+[image of the Preview button and a preview in the Image Editor]
 
 ---
 

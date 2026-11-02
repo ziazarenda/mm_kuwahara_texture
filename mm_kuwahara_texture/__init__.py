@@ -8,7 +8,7 @@
 bl_info = {
     "name": "Material Maker Kuwahara Texture",
     "author": "ziazarenda",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (5, 2, 0),
     "location": "Image Editor > Sidebar > MM Kuwahara",
     "description": "Apply Material Maker's anisotropic Kuwahara to image textures",
@@ -177,9 +177,16 @@ def write_lossless_rgba_png(filepath, rgba, compression=100, srgb=True):
 CAPTURED_BUFFERS = {}
 
 
+def is_filter_result(image):
+    """True for a full result made by this add-on (not a preview)."""
+    return bool(image.get('mm_kuwahara_settings')) and not image.get('mm_kuwahara_preview')
+
+
 class MMK_Settings(bpy.types.PropertyGroup):
     image: PointerProperty(name='Source image', type=bpy.types.Image)
     output_image: PointerProperty(name='Filtered image', type=bpy.types.Image)
+    node_image: PointerProperty(name='Result', type=bpy.types.Image, poll=lambda self, image: is_filter_result(image),
+        description='Filtered image to put in the selected Image Texture nodes. Only results made by this add-on are listed')
     png_compression: IntProperty(name='PNG compression', default=80, min=0, max=100,
         description='Lossless compression: higher values usually save smaller files but take longer')
     capture_buffers: BoolProperty(name='Capture diagnostic buffers', default=False,
@@ -191,6 +198,10 @@ class MMK_Settings(bpy.types.PropertyGroup):
         ('SAME', 'Same as processing', 'No resampling pass'),
         *[(str(2**n), str(2**n)+' x '+str(2**n), '') for n in range(7,14)]], default='2048',
         description='Resample the finished result. Does not change the brushstroke size')
+    preview_size: EnumProperty(name='Preview size', items=[
+        (str(n), str(n)+' x '+str(n), '') for n in (128, 256, 512)], default='256',
+        description='Size of the area that Preview filters. It is taken from the middle of the image '
+                    'at the processing resolution, so the strokes look the same as in the full result')
     size: IntProperty(name='Size', default=6, min=1, max=32)
     uniformity: FloatProperty(name='Uniformity', default=4.0, min=0.0, max=50.0)
     sharpness: FloatProperty(name='Sharpness', default=1.0, min=0.0, max=1.0)
@@ -201,7 +212,9 @@ class MMK_Settings(bpy.types.PropertyGroup):
 def source_problem(source):
     """Say why the source image cannot be filtered, or return None when it can."""
     if source is None or not source.has_data:
-        return 'Select a loaded source image first'
+        return 'Open a loaded image in the Image Editor first'
+    if getattr(source, 'get', lambda key: None)('mm_kuwahara_preview'):
+        return 'This is a preview image. Choose the original image as the source'
     if source.source in {'TILED','MOVIE','SEQUENCE','VIEWER'}:
         return 'First version supports single still images only'
     width, height = source.size[:]
@@ -217,6 +230,45 @@ def source_problem(source):
     if source.colorspace_settings.name not in {'sRGB','Non-Color','Raw'}:
         return 'Use an sRGB color image or a Non-Color data image'
     return None
+
+
+def resolve_source(context):
+    """The image to filter.
+
+    It is the image open in the Image Editor. If that is a result or a preview made
+    by this add-on, its original is used instead, so changing the settings and filtering
+    again starts from the original, not from the result. Without an editor image (a
+    script, or a test) the `image` property is used.
+    """
+    image = getattr(context.space_data, 'image', None)
+    if image is None:
+        settings = getattr(context.scene, 'mm_kuwahara', None)
+        return settings.image if settings else None
+    origin = image.get('mm_kuwahara_source')
+    original = bpy.data.images.get(origin) if origin else None
+    return original if original is not None else image
+
+
+def result_image(context):
+    """The image Export saves: the result open in the editor, else the last result made.
+
+    A preview open in the editor gives None, so Export is off while one is shown.
+    """
+    image = getattr(context.space_data, 'image', None)
+    if image is not None and image.get('mm_kuwahara_preview'):
+        return None
+    if image is not None and image.get('mm_kuwahara_settings'):
+        return image
+    settings = getattr(context.scene, 'mm_kuwahara', None)
+    return settings.output_image if settings else None
+
+
+def selected_image_nodes(context):
+    """The selected Image Texture nodes of the shader tree open in the Node Editor."""
+    tree = getattr(context.space_data, 'edit_tree', None)
+    if tree is None:
+        return []
+    return [node for node in tree.nodes if node.select and node.bl_idname == 'ShaderNodeTexImage']
 
 
 def image_rgba(image):
@@ -235,6 +287,111 @@ def set_uniform(shader, method, name, value):
         pass
 
 
+def prepare_pixels(source):
+    """Source pixels as Material Maker sees them: half-truncated, top row first."""
+    if source.alpha_mode == 'PREMUL':
+        raise ValueError('Use Straight alpha for this first version')
+    pixels = material_maker_byte_input(image_rgba(source))
+    # Run the original functions in Material Maker's logical top-first
+    # coordinates. This aligns vertical sampling/accumulation order,
+    # not just the final displayed orientation.
+    return np.flipud(pixels).copy()
+
+
+def source_texture(pixels):
+    """Upload prepared pixels as RGBA16F. The encoded RGB is kept: no transfer function on input or output."""
+    height, width = pixels.shape[:2]
+    return gpu.types.GPUTexture((width,height), format='RGBA16F',
+        data=gpu.types.Buffer('FLOAT', pixels.size, pixels.reshape(-1)))
+
+
+PASSES = (('tensor',(0.0,0.0)),('blur',(1.0,0.0)),('blur',(0.0,1.0)),('filter',(0.0,0.0)))
+
+
+def run_pipeline(color, res, output_res, settings, targets, regions=None, read_rect=None, on_pass=None):
+    """Run the GPU passes on `color`; return (last texture, pixels read from read_rect).
+
+    Every offscreen buffer created is added to `targets`, so the caller can free them
+    even when a pass fails. `regions` limits each of the four filter passes to a
+    rectangle (x, y, w, h); None runs them over the whole frame. `read_rect` reads
+    that rectangle of the last pass straight from the GPU instead of the whole frame.
+    `on_pass(index, texture)` is called after every pass.
+    """
+    shaders = {key:make_shader(key) for key in ('tensor','blur','filter')}
+    passes = list(PASSES)
+    if output_res != res:
+        shaders['export'] = make_shader('export')
+        passes.append(('export',(0.0,0.0)))
+    tensor = color  # Dummy binding on first pass; not read by tensor shader.
+    read_values = None
+    gpu.state.blend_set('NONE')
+    gpu.state.depth_test_set('NONE')
+    for index,(stage,axis) in enumerate(passes):
+        frame_res = output_res if stage == 'export' else res
+        # Export samples the completed half-float texture BEFORE byte
+        # quantization, with Material Maker's linear repeat sampling.
+        pass_color = tensor if stage == 'export' else color
+        target = gpu.types.GPUOffScreen(frame_res,frame_res,format='RGBA16F')
+        targets.append(target)
+        shader = shaders[stage]
+        batch = batch_for_shader(shader,'TRI_STRIP',
+            {'position':((-1,-1),(1,-1),(-1,1),(1,1))})
+        x, y, width, height = (regions[index] if regions and index < len(regions)
+                               else (0, 0, frame_res, frame_res))
+        with target.bind():
+            # A smaller viewport draws only that rectangle. Fragment coordinates
+            # stay absolute, so every pixel gets the same value as in a full run.
+            gpu.state.viewport_set(x,y,width,height)
+            shader.bind()
+            set_uniform(shader,'uniform_sampler','color_tex',pass_color)
+            set_uniform(shader,'uniform_sampler','tensor_tex',tensor)
+            set_uniform(shader,'uniform_float','resolution',float(res))
+            set_uniform(shader,'uniform_float','frame_resolution',float(frame_res))
+            set_uniform(shader,'uniform_float','uniformity',settings.uniformity)
+            set_uniform(shader,'uniform_float','blur_axis',axis)
+            set_uniform(shader,'uniform_int','filter_size',settings.size)
+            set_uniform(shader,'uniform_float','sharpness_value',settings.sharpness)
+            set_uniform(shader,'uniform_float','eccentricity_value',settings.eccentricity)
+            batch.draw(shader)
+            if read_rect is not None and index == len(passes) - 1:
+                rx, ry, rw, rh = read_rect
+                buffer = gpu.state.active_framebuffer_get().read_color(rx, ry, rw, rh, 4, 0, 'FLOAT')
+                read_values = np.array(buffer, dtype=np.float32).reshape(rh, rw, 4)
+        tensor = target.texture_color
+        if on_pass is not None:
+            on_pass(index, tensor)
+    return tensor, read_values
+
+
+# The blur passes reach 50 pixels each way (blur.glsl); one more is kept as a safety margin.
+BLUR_REACH = 51
+
+
+def preview_plan(res, size):
+    """Plan a preview of the middle of a res x res frame.
+
+    Returns (crop, regions). `crop` is the (x, y, w, h) rectangle to show; `regions`
+    holds the rectangle each pass (tensor, blur X, blur Y, filter) has to cover so that
+    the crop is identical to the same pixels of a full run. The filter reads the blurred
+    tensor only at its own pixel, so it needs no extra border. Blur Y reads blur X
+    BLUR_REACH rows up and down, and blur X reads the tensor BLUR_REACH columns
+    left and right.
+    """
+    size = max(1, min(int(size), int(res)))
+    x = y = (res - size) // 2
+    crop = (x, y, size, size)
+    reach = BLUR_REACH
+    if size + 2 * reach > res:
+        # Too close to the image edges (the sampling wraps around): do the whole frame.
+        return crop, [(0, 0, res, res)] * 4
+    return crop, [
+        (x - reach, y - reach, size + 2 * reach, size + 2 * reach),  # tensor
+        (x, y - reach, size, size + 2 * reach),                      # blur X
+        (x, y, size, size),                                          # blur Y
+        (x, y, size, size),                                          # filter
+    ]
+
+
 class MMK_OT_Filter(bpy.types.Operator):
     bl_idname = 'image.mm_kuwahara_filter'
     bl_label = 'Create filtered texture'
@@ -243,7 +400,7 @@ class MMK_OT_Filter(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.mm_kuwahara
-        source = settings.image or getattr(context.space_data, 'image', None)
+        source = resolve_source(context)
         problem = source_problem(source)
         if problem:
             self.report({'ERROR'}, problem)
@@ -260,56 +417,16 @@ class MMK_OT_Filter(bpy.types.Operator):
             res = int(settings.resolution)
             output_res = res if settings.export_resolution == 'SAME' else int(settings.export_resolution)
             wm.progress_begin(0, 4 + int(output_res != res))
-            pixels = material_maker_byte_input(image_rgba(source))
-            # Run the original functions in Material Maker's logical top-first
-            # coordinates. This aligns vertical sampling/accumulation order,
-            # not just the final displayed orientation.
-            pixels = np.flipud(pixels).copy()
+            pixels = prepare_pixels(source)
             capture = {'source': pixels.copy()} if settings.capture_buffers else {}
-            # Preserve encoded RGB, matching Material Maker's input half precision.
-            # No extra transfer function on input or output.
-            if source.alpha_mode == 'PREMUL':
-                raise ValueError('Use Straight alpha for this first version')
-            color = gpu.types.GPUTexture((width,height), format='RGBA16F',
-                data=gpu.types.Buffer('FLOAT', pixels.size, pixels.reshape(-1)))
-            shaders = {key:make_shader(key) for key in ('tensor','blur','filter')}
-            if output_res != res:
-                shaders['export'] = make_shader('export')
-            tensor = color  # Dummy binding on first pass; not read by tensor shader.
-            passes = [('tensor',(0.0,0.0)),('blur',(1.0,0.0)),
-                      ('blur',(0.0,1.0)),('filter',(0.0,0.0))]
-            if output_res != res:
-                passes.append(('export',(0.0,0.0)))
-            gpu.state.blend_set('NONE')
-            gpu.state.depth_test_set('NONE')
-            for index,(stage,axis) in enumerate(passes):
-                frame_res = output_res if stage == 'export' else res
-                # Export samples the completed half-float texture BEFORE byte
-                # quantization, with Material Maker's linear repeat sampling.
-                pass_color = tensor if stage == 'export' else color
-                target = gpu.types.GPUOffScreen(frame_res,frame_res,format='RGBA16F')
-                targets.append(target)
-                shader = shaders[stage]
-                batch = batch_for_shader(shader,'TRI_STRIP',
-                    {'position':((-1,-1),(1,-1),(-1,1),(1,1))})
-                with target.bind():
-                    gpu.state.viewport_set(0,0,frame_res,frame_res)
-                    shader.bind()
-                    set_uniform(shader,'uniform_sampler','color_tex',pass_color)
-                    set_uniform(shader,'uniform_sampler','tensor_tex',tensor)
-                    set_uniform(shader,'uniform_float','resolution',float(res))
-                    set_uniform(shader,'uniform_float','frame_resolution',float(frame_res))
-                    set_uniform(shader,'uniform_float','uniformity',settings.uniformity)
-                    set_uniform(shader,'uniform_float','blur_axis',axis)
-                    set_uniform(shader,'uniform_int','filter_size',settings.size)
-                    set_uniform(shader,'uniform_float','sharpness_value',settings.sharpness)
-                    set_uniform(shader,'uniform_float','eccentricity_value',settings.eccentricity)
-                    batch.draw(shader)
-                tensor = target.texture_color
+            color = source_texture(pixels)
+            def on_pass(index, texture):
                 if settings.capture_buffers and index < 4:
                     key = ('tensor','blur_x','blur_y','filtered')[index]
-                    capture[key] = np.array(tensor.read(),dtype=np.float32).reshape(res,res,4).copy()
+                    capture[key] = np.array(texture.read(),dtype=np.float32).reshape(res,res,4).copy()
                 wm.progress_update(index+1)
+
+            tensor, _ = run_pipeline(color, res, output_res, settings, targets, on_pass=on_pass)
             values = np.array(tensor.read(), dtype=np.float32).reshape(output_res,output_res,4)
             if not np.isfinite(values).all():
                 raise ValueError('The shader produced invalid values, so no image was created')
@@ -335,8 +452,10 @@ class MMK_OT_Filter(bpy.types.Operator):
                 'sharpness':settings.sharpness,'eccentricity':settings.eccentricity}
             output['mm_kuwahara_settings'] = str({'resolution':res,'output_resolution':output_res,
                 **filter_settings,'version':ADDON_VERSION,'byte_values_preserved':True})
+            output['mm_kuwahara_source'] = source.name
             output.pack()
             settings.output_image = output
+            settings.node_image = output
             if settings.capture_buffers:
                 metadata = {
                     'addon_version':ADDON_VERSION, 'blender_version':bpy.app.version_string,
@@ -372,6 +491,99 @@ class MMK_OT_Filter(bpy.types.Operator):
             wm.progress_end()
 
 
+class MMK_OT_Preview(bpy.types.Operator):
+    bl_idname = 'image.mm_kuwahara_preview'
+    bl_label = 'Preview filter'
+    bl_description = ('Filter the middle of the texture with the current settings to check them quickly. '
+                      'The preview image is temporary and the original stays unchanged')
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        settings = context.scene.mm_kuwahara
+        source = resolve_source(context)
+        problem = source_problem(source)
+        if problem:
+            self.report({'ERROR'}, problem)
+            return {'CANCELLED'}
+        targets = []
+        preview = None
+        created = False
+        wm = context.window_manager
+        viewport = gpu.state.viewport_get()
+        blend = gpu.state.blend_get()
+        depth = gpu.state.depth_test_get()
+        try:
+            res = int(settings.resolution)
+            crop, regions = preview_plan(res, int(settings.preview_size))
+            color = source_texture(prepare_pixels(source))
+            _, values = run_pipeline(color, res, res, settings, targets, regions=regions, read_rect=crop)
+            if not np.isfinite(values).all():
+                raise ValueError('The shader produced invalid values, so no preview was created')
+            size = crop[2]
+            # Same storage conversions as the full result (bottom row first, truncated bytes).
+            values = np.floor(np.clip(np.flipud(values), 0.0, 1.0) * 255.0) / 255.0
+            # Reuse this source's earlier preview (found by its marker, never by name alone),
+            # so nothing that points at it breaks and previews do not pile up.
+            preview = next((image for image in bpy.data.images
+                            if image.get('mm_kuwahara_preview') and image.get('mm_kuwahara_source') == source.name), None)
+            if preview is None:
+                preview = bpy.data.images.new(source.name + '_MM_Preview', width=size, height=size,
+                                              alpha=True, float_buffer=False)
+                created = True
+            elif tuple(preview.size) != (size, size):
+                preview.scale(size, size)
+            preview.colorspace_settings.name = ('Non-Color'
+                if source.colorspace_settings.name in {'Non-Color','Raw'} else 'sRGB')
+            preview.alpha_mode = 'STRAIGHT'
+            preview.pixels.foreach_set(values.reshape(-1))
+            preview.update()
+            preview['mm_kuwahara_preview'] = True
+            preview['mm_kuwahara_source'] = source.name
+            preview['mm_kuwahara_settings'] = str({'resolution':res,'preview_size':size,
+                'size':settings.size,'uniformity':settings.uniformity,'sharpness':settings.sharpness,
+                'eccentricity':settings.eccentricity,'version':ADDON_VERSION})
+            if (context.area is not None and context.area.type == 'IMAGE_EDITOR'
+                    and context.space_data is not None):
+                context.space_data.image = preview
+            self.report({'INFO'}, f'Preview of the middle {size} x {size} pixels at {res} x {res}')
+            return {'FINISHED'}
+        except Exception as exc:
+            traceback.print_exc()
+            if preview is not None and created:
+                bpy.data.images.remove(preview)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        finally:
+            gpu.state.viewport_set(*viewport)
+            gpu.state.blend_set(blend)
+            gpu.state.depth_test_set(depth)
+            for target in reversed(targets):
+                target.free()
+
+
+class MMK_OT_ApplyToNodes(bpy.types.Operator):
+    bl_idname = 'image.mm_kuwahara_apply_to_nodes'
+    bl_label = 'Use result in selected nodes'
+    bl_description = 'Replace the image of the selected Image Texture nodes with the chosen filtered result'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        image = context.scene.mm_kuwahara.node_image
+        return bool(image and image.has_data and selected_image_nodes(context))
+
+    def execute(self, context):
+        image = context.scene.mm_kuwahara.node_image
+        nodes = selected_image_nodes(context)
+        if image is None or not nodes:
+            self.report({'ERROR'}, 'Select an Image Texture node and filter an image first')
+            return {'CANCELLED'}
+        for node in nodes:
+            node.image = image
+        self.report({'INFO'}, f'Set {image.name} on {len(nodes)} node(s)')
+        return {'FINISHED'}
+
+
 class MMK_OT_ExportPNG(bpy.types.Operator, ExportHelper):
     bl_idname = 'image.mm_kuwahara_export_png'
     bl_label = 'Export PNG'
@@ -383,8 +595,7 @@ class MMK_OT_ExportPNG(bpy.types.Operator, ExportHelper):
 
     @classmethod
     def poll(cls, context):
-        settings = getattr(context.scene, 'mm_kuwahara', None)
-        image = settings.output_image if settings else None
+        image = result_image(context)
         return bool(image and image.has_data and not image.is_float)
 
     def invoke(self, context, event):
@@ -392,7 +603,7 @@ class MMK_OT_ExportPNG(bpy.types.Operator, ExportHelper):
         self.compression = settings.png_compression
         if not self.filepath:
             self.filepath = bpy.path.ensure_ext(
-                bpy.path.clean_name(settings.output_image.name), '.png')
+                bpy.path.clean_name(result_image(context).name), '.png')
         return ExportHelper.invoke(self, context, event)
 
     def draw(self, context):
@@ -401,7 +612,7 @@ class MMK_OT_ExportPNG(bpy.types.Operator, ExportHelper):
 
     def execute(self, context):
         settings = context.scene.mm_kuwahara
-        image = settings.output_image
+        image = result_image(context)
         if image is None or not image.has_data or image.is_float or image.channels != 4:
             self.report({'ERROR'}, 'Choose a generated 8-bit RGBA filtered image')
             return {'CANCELLED'}
@@ -448,7 +659,7 @@ INPUT_SCALE_Y = 1.3
 
 
 class MMK_PT_Panel(bpy.types.Panel):
-    bl_label = 'Material Maker Kuwahara 1.0'
+    bl_label = 'Material Maker Kuwahara'
     bl_idname = 'IMAGE_PT_mm_kuwahara'
     bl_space_type = 'IMAGE_EDITOR'
     bl_region_type = 'UI'
@@ -462,7 +673,8 @@ class MMK_PT_Panel(bpy.types.Panel):
         col = box.column()
         col.scale_y = INPUT_SCALE_Y
 
-        col.prop(s, 'image', text='Source')
+        source = resolve_source(context)
+        col.label(text='Source: ' + (source.name if source else 'open an image'), icon='IMAGE_DATA')
         col.prop(s, 'resolution', text='Process')
         col.prop(s, 'export_resolution', text='Output')
 
@@ -470,15 +682,17 @@ class MMK_PT_Panel(bpy.types.Panel):
             col.prop(s,key)
 
         col.prop(s, 'capture_buffers', text='Capture Buffers')
+        col.prop(s, 'preview_size', text='Preview')
 
         col = box.column()
         col.scale_y = BUTTON_SCALE_Y
-        col.operator('image.mm_kuwahara_filter', text='Filter Texture')
+        row = col.row(align=True)
+        row.operator('image.mm_kuwahara_preview', text='Preview')
+        row.operator('image.mm_kuwahara_filter', text='Filter Texture')
 
         box = layout.box()
         col = box.column()
         col.scale_y = INPUT_SCALE_Y
-        col.prop(s, 'output_image', text='Result')
         col.prop(s, 'png_compression', text='Compression')
 
         col = box.column()
@@ -495,7 +709,30 @@ class MMK_PT_Panel(bpy.types.Panel):
         col.label(text='Non-destructive (creates new image)')
 
 
-CLASSES = (MMK_Settings,MMK_OT_Filter,MMK_OT_ExportPNG,MMK_OT_SaveDiagnostics,MMK_PT_Panel)
+class MMK_PT_NodePanel(bpy.types.Panel):
+    bl_label = 'Material Maker Kuwahara'
+    bl_idname = 'NODE_PT_mm_kuwahara'
+    bl_space_type = 'NODE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'MM Kuwahara'
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context.space_data, 'tree_type', '') == 'ShaderNodeTree'
+
+    def draw(self, context):
+        box = self.layout.box()
+        col = box.column()
+        col.prop(context.scene.mm_kuwahara, 'node_image', text='Result')
+        nodes = selected_image_nodes(context)
+        col.label(text=f'Selected Image Texture nodes: {len(nodes)}')
+        col = box.column()
+        col.scale_y = BUTTON_SCALE_Y
+        col.operator('image.mm_kuwahara_apply_to_nodes', text='Use Result in Selected Nodes')
+
+
+CLASSES = (MMK_Settings,MMK_OT_Filter,MMK_OT_Preview,MMK_OT_ApplyToNodes,MMK_OT_ExportPNG,
+           MMK_OT_SaveDiagnostics,MMK_PT_Panel,MMK_PT_NodePanel)
 
 
 def register():
