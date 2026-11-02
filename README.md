@@ -6,7 +6,7 @@ The filter runs on the GPU and is a port of the Material Maker node. It aims to 
 
 > **Blender 5.2 or newer.** Experimental. Works on single, square 8-bit images (JPEG or PNG).
 
-[image: before and after, a photo texture next to the filtered result]
+![Before and after: a wood texture and its Kuwahara-filtered result](docs/images/before_after.webp)
 
 ---
 
@@ -32,8 +32,6 @@ The filter runs on the GPU and is a port of the Material Maker node. It aims to 
 3. Open the drop-down in the top right, choose **Install from Disk…** and pick the zip.
 4. Enable **Material Maker Kuwahara Texture**.
 
-[image of the Install from Disk menu]
-
 ---
 
 ## Usage
@@ -45,9 +43,9 @@ The filter runs on the GPU and is a port of the Material Maker node. It aims to 
 5. A new image named `<source name>_MM_Kuwahara` is created and shown in the editor. Your original image is not changed.
 6. Click **Export Lossless PNG** to save it.
 
-[image of the MM Kuwahara panel]
+![The MM Kuwahara panel in the Image Editor sidebar](docs/images/mm_kuwahara_panel.webp)
 
-[gif of filtering a texture]
+![Filtering a texture with one click](docs/images/filtering_a_texture.gif)
 
 The new image is packed into the .blend file and has a fake user, so it is not lost when you close Blender.
 
