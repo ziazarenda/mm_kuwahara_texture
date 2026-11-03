@@ -23,6 +23,28 @@ ADDON_VERSION = '.'.join(str(part) for part in bl_info['version'])
 CAPTURED_BUFFERS = {}
 
 
+def show_in_editor(context, image, fit):
+    """Show `image` in the Image Editor the operator was started from, and frame it.
+
+    The editor keeps its zoom when the image changes, so a bigger image would otherwise
+    appear zoomed in. `fit` fills the view (a finished result); without it the whole
+    image is shown at 100% or smaller (a preview, so its pixels are not enlarged).
+    There is no area when this runs from a script or a timer: then nothing is shown.
+    """
+    area = context.area
+    if area is None or area.type != 'IMAGE_EDITOR' or context.space_data is None:
+        return
+    context.space_data.image = image
+    region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+    if region is None:
+        return
+    try:
+        with context.temp_override(area=area, region=region, space_data=context.space_data):
+            bpy.ops.image.view_all(fit_view=fit)
+    except RuntimeError:
+        pass  # framing is only a convenience; never fail the filter because of it
+
+
 class MMK_OT_Filter(bpy.types.Operator):
     bl_idname = 'image.mm_kuwahara_filter'
     bl_label = 'Create filtered texture'
@@ -101,10 +123,7 @@ class MMK_OT_Filter(bpy.types.Operator):
                 capture['metadata_json'] = np.array(json.dumps(metadata))
                 CAPTURED_BUFFERS.clear()
                 CAPTURED_BUFFERS.update(capture)
-            # No area when run from a script or a timer; only show the result if there is an editor.
-            if (context.area is not None and context.area.type == 'IMAGE_EDITOR'
-                    and context.space_data is not None):
-                context.space_data.image = output
+            show_in_editor(context, output, fit=True)
             self.report({'INFO'}, 'Created '+output.name+'. Use Export PNG to save it')
             return {'FINISHED'}
         except Exception as exc:
@@ -176,9 +195,7 @@ class MMK_OT_Preview(bpy.types.Operator):
             preview['mm_kuwahara_settings'] = str({'resolution':res,'preview_size':size,
                 'size':settings.size,'uniformity':settings.uniformity,'sharpness':settings.sharpness,
                 'eccentricity':settings.eccentricity,'version':ADDON_VERSION})
-            if (context.area is not None and context.area.type == 'IMAGE_EDITOR'
-                    and context.space_data is not None):
-                context.space_data.image = preview
+            show_in_editor(context, preview, fit=False)
             self.report({'INFO'}, f'Preview of the middle {size} x {size} pixels at {res} x {res}')
             return {'FINISHED'}
         except Exception as exc:
