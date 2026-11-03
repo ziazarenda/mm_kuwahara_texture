@@ -2,9 +2,9 @@
 import types
 from pathlib import Path
 
-source = (Path(__file__).resolve().parents[2] / "mm_kuwahara_texture" / "__init__.py").read_text(encoding="utf-8")
+source = (Path(__file__).resolve().parents[2] / "mm_kuwahara_texture" / "images.py").read_text(encoding="utf-8")
 start = source.index("def selected_image_nodes")
-end = source.index("def image_rgba")
+end = len(source)
 namespace = {}
 exec(source[start:end], namespace)
 pick = namespace["selected_image_nodes"]
@@ -30,7 +30,7 @@ assert pick(types.SimpleNamespace(space_data=types.SimpleNamespace())) == []
 assert pick(types.SimpleNamespace(space_data=None)) == []
 
 start = source.index("def is_filter_result")
-end = source.index("class MMK_Settings")
+end = source.index("def source_problem")
 ns = {}
 exec(source[start:end], ns)
 keep = ns["is_filter_result"]

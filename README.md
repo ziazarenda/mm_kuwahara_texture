@@ -14,8 +14,9 @@ The filter runs on the GPU and is a port of the Material Maker node. It aims to 
 
 - [Installation](#installation)
 - [Usage](#usage)
-- [Preview](#preview)
 - [Settings](#settings)
+- [Preview](#preview)
+- [Use the result in a material](#use-the-result-in-a-material)
 - [Input requirements](#input-requirements)
 - [Exporting the result](#exporting-the-result)
 - [Diagnostic buffers](#diagnostic-buffers)
@@ -39,10 +40,10 @@ The filter runs on the GPU and is a port of the Material Maker node. It aims to 
 
 1. Open the **Image Editor** and load a square JPEG or PNG texture.
 2. Open the sidebar (`N`) and go to the **MM Kuwahara** tab.
-3. Choose the image under **Source**, or leave it empty to use the image shown in the editor.
+3. The first line of the panel shows which image will be filtered, for example `Source: wood_color.jpg`. It is the image open in the editor. To use another image, open it there.
 4. Adjust the settings. Click **Preview** to check them quickly (see [Preview](#preview)), then click **Filter Texture** for the full result.
-5. A new image named `<source name>_MM_Kuwahara` is created and shown in the editor. Your original image is not changed.
-6. Click **Export Lossless PNG** to save it.
+5. A new image named `<source name>_MM_Kuwahara` is created and shown in the editor. Your original image is not changed. You can change the settings and click **Filter Texture** again: the filter always starts from the original image, even while the result is open.
+6. Click **Export Lossless PNG** to save the result, or [use it in a material](#use-the-result-in-a-material) straight away.
 
 ![The MM Kuwahara panel in the Image Editor sidebar](docs/images/mm_kuwahara_panel.webp)
 
@@ -73,13 +74,26 @@ The brushstroke size depends on **Process**. A 512 pixel pass looks coarser than
 
 **Preview** filters only the middle of the image and shows the result in a temporary image named `<source name>_MM_Preview`. It is a quick way to try Size, Uniformity, Sharpness and Eccentricity on big images without waiting for the whole filter.
 
-- The preview is taken at the **Process** resolution, so the strokes look exactly like they will in the full result. It does not resample to **Output**.
-- It is a crop, not a smaller copy of the whole image. At 4096 it filters about 2% of the image, and the pixels are identical to the same pixels of the full result.
+- The preview is taken at the **Process** resolution, so the strokes look exactly like they will in the full result. It does not resample to **Output**. With **Output** set to **Same as processing**, the preview is pixel-identical to the same area of the full result.
+- It is a crop, not a smaller copy of the whole image. At 4096 with the default size it computes under 1% of the pixels of a full run.
 - If the image is small (the Process resolution is not much larger than the preview), the whole image is filtered.
-- The preview image is not saved with the .blend file, and it cannot be used as a source. Your source stays selected in the panel.
-- It uses the same GPU memory as a full run at that resolution, so it is fast but not free at 4096.
+- Each source keeps one preview image, which the next preview overwrites. It is only for checking settings, so don't build on it. **Export Lossless PNG** and the material button ignore it.
+- A preview can't be filtered or used as a source: if one is open in the editor, the panel goes back to its original image.
 
-[image of the Preview button and a preview in the Image Editor]
+---
+
+## Use the result in a material
+
+After filtering, put the result into a material without leaving Blender:
+
+1. Open the **Shader Editor** and press `N`.
+2. Go to the **MM Kuwahara** tab.
+3. Select one or more **Image Texture** nodes.
+4. Choose the image in the **Result** field and press **Use Result in Selected Nodes**.
+
+Every selected Image Texture node now uses the filtered image. Undo (`Ctrl+Z`) puts the old images back.
+
+The **Result** field lists only the images this add-on made, and no previews, so it is easy to pick the right one. After each **Filter Texture** it is set to the new result, so in the normal case you only select the nodes and press the button. The button stays greyed out until a result is chosen and an Image Texture node is selected.
 
 ---
 
@@ -107,7 +121,7 @@ The output is always **opaque**, like Material Maker's graph. Transparency in th
 - **Compression** (0 to 100, default 80) only changes file size and saving time, never the pixels.
 - The PNG is tagged as sRGB when the image uses the sRGB colour space.
 
-The button is greyed out until a filtered image exists.
+It saves the filtered image open in the editor, or the last result if another image is open. The button is greyed out until a filtered image exists, and while a preview is shown.
 
 ---
 
@@ -144,7 +158,15 @@ To match Material Maker the add-on reproduces its quirks on purpose: pixels are 
 
 ```text
 mm_kuwahara_texture/        the add-on (this is what ends up in the zip)
-├── __init__.py             operators, panel and GPU passes
+├── __init__.py             add-on info and registration
+├── settings.py             the panel's settings
+├── images.py               which image to filter, which result to use, which nodes are selected
+├── engine.py               the GPU passes, preview planning and the PNG writer (no UI)
+├── operators.py            Filter, Preview, Use Result, Export, Save diagnostics
+├── ui/
+│   ├── image_editor.py     the sidebar tab in the Image Editor
+│   ├── node_editor.py      the sidebar tab in the Shader Editor
+│   └── common.py           button sizes shared by both
 ├── LICENSES.txt            licences and sources of the original work
 └── shaders/                the filter code, kept as in Material Maker
     ├── tensor.glsl         structure tensor
@@ -162,7 +184,8 @@ The repository root also holds the build and test tooling taken from the shared 
 ```text
 build.py        runs the tests, builds the zip, installs it into a temporary
                 Blender profile and runs the Blender tests
-tests/plain/    image_logic.py and shader_text.py, run without Blender
+tests/plain/    run without Blender (Blender is replaced by stand-ins):
+                image_logic, shader_text, source_choice, preview_plan, node_pick
 tests/blender/  filter.py, runs the filter inside Blender
 .kit.json       records which files come from the kit
 ```
@@ -171,7 +194,7 @@ tests/blender/  filter.py, runs the filter inside Blender
 uv run python build.py     # tests + build, result in dist/
 ```
 
-`shader_text.py` stores a checksum of each shader file. If you change a shader on purpose, update the checksums in that test.
+`shader_text.py` stores a checksum of each shader file, and `preview_plan.py` checks that a preview covers every pixel the next pass reads. If you change a shader on purpose, update the checksums in that test.
 
 ---
 

@@ -67,7 +67,7 @@ print("ok: layout is ignored, code and comments are not")
 
 addon, _ = load_addon(ROOT / "mm_kuwahara_texture" / "__init__.py")
 
-changed = [FILES[name] for name, expected in PART_HASHES.items() if sha(normalize(getattr(addon, name))) != expected]
+changed = [FILES[name] for name, expected in PART_HASHES.items() if sha(normalize(getattr(addon.engine, name))) != expected]
 assert not changed, (
     "shader code differs from the original port in: " + ", ".join(changed) +
     ". This is a real change (layout is ignored). If it is intended, update the hashes in this test."
@@ -75,7 +75,7 @@ assert not changed, (
 print("ok: the four shader files hold the original port code")
 
 for stage, expected in STAGE_HASHES.items():
-    info = addon.make_shader(stage)
+    info = addon.engine.make_shader(stage)
     assert sha(normalize(info.fragment)) == expected, f"fragment source for '{stage}' differs from the original port"
     assert sha(info.vertex) == VERTEX_HASH, "vertex source differs"
     print("ok: fragment source of", stage, "is unchanged")
@@ -85,7 +85,7 @@ shader = ROOT / "mm_kuwahara_texture" / "shaders" / "blur.glsl"
 original = shader.read_bytes()
 shader.write_bytes(original.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
 try:
-    assert "\r" not in addon.load_glsl("blur.glsl"), "CRLF is not normalized"
+    assert "\r" not in addon.engine.load_glsl("blur.glsl"), "CRLF is not normalized"
 finally:
     shader.write_bytes(original)
 print("ok: CRLF checkouts load without carriage returns")
@@ -97,7 +97,7 @@ assert present == used, f"unexpected shader files: {present ^ used}"
 print("ok: shaders folder holds exactly the four shader files")
 
 # One version number: ADDON_VERSION is derived from bl_info.
-assert addon.ADDON_VERSION == ".".join(str(part) for part in addon.bl_info["version"])
+assert addon.operators.ADDON_VERSION == ".".join(str(part) for part in addon.bl_info["version"])
 assert not (ROOT / "mm_kuwahara_texture" / "blender_manifest.toml").exists(), "this is a legacy add-on: no manifest"
 print("ok: ADDON_VERSION comes from bl_info")
 

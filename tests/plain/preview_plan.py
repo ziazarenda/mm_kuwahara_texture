@@ -5,9 +5,9 @@ covers what the next one reads, so the preview shows the same pixels as a full r
 """
 from pathlib import Path
 
-source = (Path(__file__).resolve().parents[2] / "mm_kuwahara_texture" / "__init__.py").read_text(encoding="utf-8")
+source = (Path(__file__).resolve().parents[2] / "mm_kuwahara_texture" / "engine.py").read_text(encoding="utf-8")
 start = source.index("BLUR_REACH = ")
-end = source.index("class MMK_OT_Filter")
+end = len(source)
 namespace = {}
 exec(source[start:end], namespace)
 preview_plan = namespace["preview_plan"]

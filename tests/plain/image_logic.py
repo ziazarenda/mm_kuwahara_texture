@@ -25,17 +25,17 @@ def check(name, condition):
 
 # --- material_maker_byte_input -------------------------------------------
 bytes_as_floats = (np.arange(256, dtype=np.float32) / np.float32(255.0)).astype(np.float32)
-result = addon.material_maker_byte_input(bytes_as_floats)
+result = addon.engine.material_maker_byte_input(bytes_as_floats)
 check("byte input keeps float32 dtype", result.dtype == np.float32)
 check("byte input only clears the low 13 mantissa bits",
       np.array_equal(result.view(np.uint32), bytes_as_floats.view(np.uint32) & np.uint32(0xFFFFE000)))
 check("byte input never rounds up", bool((result <= bytes_as_floats).all()))
 check("byte input is exactly representable as half precision",
       np.array_equal(result.astype(np.float16).astype(np.float32), result))
-check("byte input is idempotent", np.array_equal(addon.material_maker_byte_input(result), result))
+check("byte input is idempotent", np.array_equal(addon.engine.material_maker_byte_input(result), result))
 check("byte input keeps 0 and 1", result[0] == 0.0 and result[255] == 1.0)
 image = np.random.default_rng(1).random((4, 4, 4)).astype(np.float32)
-check("byte input keeps the array shape", addon.material_maker_byte_input(image).shape == (4, 4, 4))
+check("byte input keeps the array shape", addon.engine.material_maker_byte_input(image).shape == (4, 4, 4))
 
 
 # --- PNG writer: decode what it wrote with a small independent decoder ----
@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory() as folder:
     for label, pixels in (("noise", noise), ("gradient", gradient), ("flat", flat)):
         for compression in (0, 80, 100):
             target = Path(folder) / f"{label}_{compression}.png"
-            addon.write_lossless_rgba_png(target, pixels, compression)
+            addon.engine.write_lossless_rgba_png(target, pixels, compression)
             chunks, decoded = decode_png(target)
             check(f"{label} at compression {compression} decodes to the same pixels",
                   np.array_equal(decoded, pixels))
@@ -100,16 +100,16 @@ with tempfile.TemporaryDirectory() as folder:
     check("sRGB images carry an sRGB chunk", b"sRGB" in chunks)
     check("chunk order is IHDR first and IEND last", chunks[0] == b"IHDR" and chunks[-1] == b"IEND")
 
-    addon.write_lossless_rgba_png(Path(folder) / "raw.png", flat, 50, srgb=False)
+    addon.engine.write_lossless_rgba_png(Path(folder) / "raw.png", flat, 50, srgb=False)
     check("Non-Color images carry no sRGB chunk", b"sRGB" not in decode_png(Path(folder) / "raw.png")[0])
 
     single = np.array([[[1, 2, 3, 4]]], dtype=np.uint8)
-    addon.write_lossless_rgba_png(Path(folder) / "one.png", single, 80)
+    addon.engine.write_lossless_rgba_png(Path(folder) / "one.png", single, 80)
     check("a 1x1 image works", np.array_equal(decode_png(Path(folder) / "one.png")[1], single))
 
     existing = Path(folder) / "existing.png"
     existing.write_bytes(b"old")
-    addon.write_lossless_rgba_png(existing, flat, 80)
+    addon.engine.write_lossless_rgba_png(existing, flat, 80)
     check("an existing file is replaced", decode_png(existing)[1].shape == (16, 16, 4))
     check("no temporary files are left behind",
           not [name for name in os.listdir(folder) if name.endswith(".tmp")])
@@ -123,7 +123,7 @@ with tempfile.TemporaryDirectory() as folder:
     ):
         target = Path(folder) / "bad.png"
         try:
-            addon.write_lossless_rgba_png(target, bad, compression)
+            addon.engine.write_lossless_rgba_png(target, bad, compression)
         except ValueError:
             check(f"rejects {label}", True)
         else:

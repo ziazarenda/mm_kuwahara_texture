@@ -3,12 +3,15 @@ without Blender. Not a test (the leading underscore keeps _run_all.py away).
 
     module, shaders = load_addon(path_to___init__.py)
 
+The functions live in the package's submodules: module.engine, module.operators, ...
+
 `shaders` records every GPUShaderCreateInfo the add-on built, so tests can
 read the exact GLSL that would be compiled.
 """
 import importlib.util
 import sys
 import types
+from pathlib import Path
 
 
 class _Info:
@@ -69,7 +72,10 @@ def _install():
 def load_addon(path, name="addon_under_test"):
     _install()
     _Info.created.clear()
-    spec = importlib.util.spec_from_file_location(name, path)
+    path = Path(path)
+    # The add-on is a package (engine.py, operators.py, ui/ ...), so load it as one:
+    # its relative imports need a package name and a search location.
+    spec = importlib.util.spec_from_file_location(name, path, submodule_search_locations=[str(path.parent)])
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)

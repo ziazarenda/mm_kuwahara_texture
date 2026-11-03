@@ -2,9 +2,9 @@
 import types
 from pathlib import Path
 
-source = (Path(__file__).resolve().parents[2] / "mm_kuwahara_texture" / "__init__.py").read_text(encoding="utf-8")
+source = (Path(__file__).resolve().parents[2] / "mm_kuwahara_texture" / "images.py").read_text(encoding="utf-8")
 start = source.index("def resolve_source")
-end = source.index("def image_rgba")
+end = len(source)
 
 
 class Image(dict):
