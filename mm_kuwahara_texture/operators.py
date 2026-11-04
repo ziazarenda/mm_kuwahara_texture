@@ -16,7 +16,8 @@ from bpy_extras.io_utils import ExportHelper
 from . import bl_info
 from .engine import (prepare_pixels, source_texture, run_pipeline, preview_plan,
                      image_rgba, write_lossless_rgba_png)
-from .images import source_problem, resolve_source, result_image, selected_image_nodes
+from .images import (source_problem, resolve_source, result_image, selected_image_nodes,
+                     mark_generated, is_preview_of)
 
 ADDON_VERSION = '.'.join(str(part) for part in bl_info['version'])
 
@@ -105,7 +106,7 @@ class MMK_OT_Filter(bpy.types.Operator):
                 'sharpness':settings.sharpness,'eccentricity':settings.eccentricity}
             output['mm_kuwahara_settings'] = str({'resolution':res,'output_resolution':output_res,
                 **filter_settings,'version':ADDON_VERSION,'byte_values_preserved':True})
-            output['mm_kuwahara_source'] = source.name
+            mark_generated(output, source)
             output.pack()
             settings.output_image = output
             settings.node_image = output
@@ -172,29 +173,29 @@ class MMK_OT_Preview(bpy.types.Operator):
             size = crop[2]
             # Same storage conversions as the full result (bottom row first, truncated bytes).
             values = np.floor(np.clip(np.flipud(values), 0.0, 1.0) * 255.0) / 255.0
-            # Reuse this source's earlier preview (found by its marker, never by name alone),
-            # so nothing that points at it breaks and previews do not pile up.
-            preview = next((image for image in bpy.data.images
-                            if image.get('mm_kuwahara_preview') and image.get('mm_kuwahara_source') == source.name), None)
+            preview = next((im for im in bpy.data.images if is_preview_of(im, source)), None)
+            old = None
             if preview is not None and tuple(preview.size) != (size, size):
-                # Resizing an existing image with scale() leaves its pixel array at the old size,
-                # so writing the new pixels fails. A preview of another size is made again instead.
-                bpy.data.images.remove(preview)
-                preview = None
+                old, preview = preview, None
             if preview is None:
                 preview = bpy.data.images.new(source.name + '_MM_Preview', width=size, height=size,
-                                              alpha=True, float_buffer=False)
+                                            alpha=True, float_buffer=False)
                 created = True
             preview.colorspace_settings.name = ('Non-Color'
                 if source.colorspace_settings.name in {'Non-Color','Raw'} else 'sRGB')
             preview.alpha_mode = 'STRAIGHT'
             preview.pixels.foreach_set(values.reshape(-1))
             preview.update()
+            mark_generated(preview, source)
             preview['mm_kuwahara_preview'] = True
-            preview['mm_kuwahara_source'] = source.name
             preview['mm_kuwahara_settings'] = str({'resolution':res,'preview_size':size,
                 'size':settings.size,'uniformity':settings.uniformity,'sharpness':settings.sharpness,
                 'eccentricity':settings.eccentricity,'version':ADDON_VERSION})
+            if old is not None:
+                name = old.name
+                old.user_remap(preview)
+                bpy.data.images.remove(old)
+                preview.name = name
             show_in_editor(context, preview, fit=False)
             self.report({'INFO'}, f'Preview of the middle {size} x {size} pixels at {res} x {res}')
             return {'FINISHED'}

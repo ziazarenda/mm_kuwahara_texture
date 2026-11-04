@@ -8,7 +8,7 @@
 bl_info = {
     "name": "Material Maker Kuwahara Texture",
     "author": "ziazarenda",
-    "version": (1, 1, 2),
+    "version": (1, 1, 3),
     "blender": (5, 2, 0),
     "location": "Image Editor > Sidebar > MM Kuwahara",
     "description": "Apply Material Maker's anisotropic Kuwahara to image textures",

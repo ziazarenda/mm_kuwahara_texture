@@ -3,7 +3,7 @@ import types
 from pathlib import Path
 
 source = (Path(__file__).resolve().parents[2] / "mm_kuwahara_texture" / "images.py").read_text(encoding="utf-8")
-start = source.index("def resolve_source")
+start = source.index("def mark_generated")
 end = len(source)
 
 
