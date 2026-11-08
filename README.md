@@ -30,7 +30,7 @@ The filter runs on the GPU and is a port of the Material Maker node. It aims to 
 ## Installation
 
 1. Download `mm_kuwahara_texture-x.y.z.zip` from the [Releases](../../releases) page.
-2. In Blender open **Edit → Preferences → Add-ons**.
+2. In Blender open **Edit > Preferences > Add-ons**.
 3. Open the drop-down in the top right, choose **Install from Disk…** and pick the zip.
 4. Enable **Material Maker Kuwahara Texture**.
 
@@ -76,7 +76,7 @@ The brushstroke size depends on **Process**. A 512 pixel pass looks coarser than
 
 - The preview is taken at the **Process** resolution, so the strokes look exactly like they will in the full result. It does not resample to **Output**. With **Output** set to **Same as processing**, the preview is pixel-identical to the same area of the full result.
 - It is a crop, not a smaller copy of the whole image. At 4096 with the default size it computes under 1% of the pixels of a full run.
-- If the image is small (the Process resolution is not much larger than the preview), the whole image is filtered.
+- If the image is small (the Process resolution is not much larger than the preview), the whole image is computed, but only the middle part is shown.
 - Each source keeps one preview image, which the next preview overwrites. It is only for checking settings, so don't build on it. **Export Lossless PNG** and the material button ignore it.
 - A preview can't be filtered or used as a source: if one is open in the editor, the panel goes back to its original image.
 
